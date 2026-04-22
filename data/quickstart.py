@@ -7,6 +7,26 @@ Run:
     cd ashare_bt
     python examples/quickstart.py
 """
+import pandas as pd
+
+# 显示所有列
+pd.set_option('display.max_columns', None)
+
+# 禁止 DataFrame 按宽度自动换行（尽量在一行内输出）
+pd.set_option('display.expand_frame_repr', False)
+
+# 可选：不截断单元格内容
+pd.set_option('display.max_colwidth', None)
+
+# 可选：增大输出宽度，避免受终端宽度限制换行
+pd.set_option('display.width', 1000)
+
+# 恢复默认（如果需要）
+# pd.reset_option('display.max_columns')
+# pd.reset_option('display.expand_frame_repr')
+# pd.reset_option('display.max_colwidth')
+# pd.reset_option('display.width')
+
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

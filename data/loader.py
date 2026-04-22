@@ -417,14 +417,37 @@ class AKLoader:
         ak = self._ak
         start_fmt = start.replace("-", "")
         end_fmt   = end.replace("-", "")
-        df = ak.stock_zh_a_hist(
-            symbol=symbol,
-            period="daily",
+
+        # Primary: 东方财富 (East Money)
+        try:
+            df = ak.stock_zh_a_hist(
+                symbol=symbol,
+                period="daily",
+                start_date=start_fmt,
+                end_date=end_fmt,
+                adjust=adjust,
+            )
+            return _normalise_ak(df)
+        except Exception as e:
+            logger.warning("East Money API failed (%s), trying Sina fallback…", e)
+
+        # Fallback: Sina Finance — more accessible outside China
+        exchange = "sh" if symbol.startswith(("6", "9")) else "sz"
+        sina_symbol = f"{exchange}{symbol}"
+        adjust_sina = adjust if adjust else None
+        df = ak.stock_zh_a_daily(
+            symbol=sina_symbol,
             start_date=start_fmt,
             end_date=end_fmt,
-            adjust=adjust,
+            adjust=adjust_sina,
         )
-        return _normalise_ak(df)
+        df = df.rename(columns={"date": "date", "open": "open", "high": "high",
+                                 "low": "low", "close": "close", "volume": "volume"})
+        df["date"] = pd.to_datetime(df["date"])
+        for col in ("open", "high", "low", "close", "volume"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df.sort_values("date").reset_index(drop=True)
 
     def _fetch_index(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         ak = self._ak

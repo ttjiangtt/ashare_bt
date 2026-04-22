@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 
 from position import Trade
-from metrics import compute_metrics
+import metrics
 
 
 class BacktestResult:
@@ -48,7 +48,7 @@ class BacktestResult:
         self.strategy_name = strategy_name
         self.symbol = symbol
         self.initial_cash = initial_cash
-        self.metrics = compute_metrics(equity_curve, trades, initial_cash, risk_free_rate)
+        self.metrics = metrics.compute_metrics(equity_curve, trades, initial_cash, risk_free_rate)
 
     # ── Display ─────────────────────────────────────────────────────────────────
 

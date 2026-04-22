@@ -1,0 +1,14 @@
+name: ashare_bt
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=1.24
+  - pandas>=2.0
+  - matplotlib>=3.7
+  - pytest>=7.0
+  - pytest-cov
+  - pip
+  - pip:
+      - -e .     # installs ashare_bt itself in editable mode

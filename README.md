@@ -1,0 +1,122 @@
+# ashare_bt
+
+A lightweight, dependency-minimal Python library for backtesting A-share (中国A股) trading strategies.
+
+## Features
+
+| Feature | Detail |
+|---|---|
+| **A-share rules** | T+1, 100-share lot rounding, ±10% daily price limits |
+| **Execution costs** | Commission (both legs), stamp duty (sell-side), slippage |
+| **Built-in strategies** | SMA Cross, EMA Cross, RSI, MACD, Bollinger Bands, KDJ |
+| **Custom strategies** | Subclass `Strategy`, implement `next()` |
+| **Indicators** | SMA, EMA, RSI, MACD, Bollinger, ATR, KDJ |
+| **Metrics** | Total/annual return, Sharpe, Sortino, Calmar, max drawdown, win rate, profit factor, … |
+| **Parameter optimisation** | Grid search with `bt.optimise()` |
+| **Plotting** | Equity curve, drawdown, per-trade P&L (requires `matplotlib`) |
+
+## Installation
+
+```bash
+pip install .                  # core (numpy + pandas only)
+pip install ".[plot]"          # + matplotlib for result.plot()
+pip install ".[dev]"           # + pytest for running tests
+```
+
+## Quick Start
+
+```python
+import pandas as pd
+from ashare_bt import Backtest, DataFeed
+from ashare_bt.strategy import SMACross
+
+# Load your data (CSV with date, open, high, low, close, volume columns)
+feed = DataFeed("600519.csv", symbol="600519")
+
+# Run a backtest
+bt = Backtest(
+    data=feed,
+    strategy=SMACross,
+    cash=100_000,
+    commission=0.0003,   # 万三
+    stamp_duty=0.001,    # 千一
+    slippage=0.0005,
+    fast=5,
+    slow=20,
+)
+
+result = bt.run()
+print(result.summary())
+result.plot()
+```
+
+## Custom Strategy
+
+```python
+from ashare_bt import Backtest, Strategy
+from ashare_bt.utils.indicators import ema, rsi
+
+class MyStrategy(Strategy):
+    fast = 8
+    slow = 21
+
+    def init(self):
+        c = self.data.closes()
+        self.fast_ema = self.indicator(ema, c, self.fast)
+        self.slow_ema = self.indicator(ema, c, self.slow)
+
+    def next(self):
+        i = self.data._cursor
+        if self.position is None:
+            if self.fast_ema[i] > self.slow_ema[i]:
+                self.buy()
+        else:
+            if self.fast_ema[i] < self.slow_ema[i]:
+                self.sell()
+
+result = Backtest(feed, MyStrategy, cash=100_000).run()
+print(result)
+```
+
+## Parameter Optimisation
+
+```python
+bt = Backtest(feed, SMACross, cash=100_000)
+grid = bt.optimise(fast=range(3, 15, 2), slow=range(10, 40, 5))
+print(grid[["fast", "slow", "sharpe", "total_return"]].head(10))
+```
+
+## Available Metrics
+
+```python
+result.metrics
+# {'total_return': 0.32, 'ann_return': 0.12, 'sharpe': 1.24,
+#  'sortino': 1.87, 'calmar': 2.1, 'max_drawdown': -8.5,
+#  'win_rate': 0.58, 'profit_factor': 1.6, 'n_trades': 42, ...}
+```
+
+## Running Tests
+
+```bash
+pip install ".[dev]"
+pytest tests/ -v
+```
+
+## Data Format
+
+`DataFeed` accepts any DataFrame or CSV with these columns (aliases recognised):
+
+| Canonical | Recognised aliases |
+|---|---|
+| `date`   | `trade_date`, `日期`, `datetime` |
+| `open`   | `开盘`, `open_price` |
+| `high`   | `最高`, `high_price` |
+| `low`    | `最低`, `low_price` |
+| `close`  | `收盘`, `close_price` |
+| `volume` | `成交量`, `vol` |
+
+Optional: `amount` (成交额), `adj_factor` (复权因子, used with `adjust=True`).
+
+## Licence
+
+MIT

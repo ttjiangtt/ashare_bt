@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+# ✅ Standard, works with any setuptools ≥ 42
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ashare-bt"
+version = "0.1.0"
+description = "Lightweight A-share backtesting library"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Your Name" }]
+
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+dev  = ["pytest>=7.0", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ashare_bt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

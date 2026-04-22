@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+ashare_bt.egg-info/PKG-INFO
+ashare_bt.egg-info/SOURCES.txt
+ashare_bt.egg-info/dependency_links.txt
+ashare_bt.egg-info/requires.txt
+ashare_bt.egg-info/top_level.txt

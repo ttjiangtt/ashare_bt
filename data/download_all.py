@@ -23,14 +23,6 @@ Arguments:
                 e.g. --symbols 600519,000001,601318. Defaults to full universe.
     --throttle  Seconds to wait between requests (default: 0.5).
 """
-# python
-# 在 `data/download_all.py` 顶部（在其它 imports 之前）添加以下内容：
-from pathlib import Path
-import sys
-
-# 将项目根（父级的父级）加入模块搜索路径
-project_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(project_root))
 
 import argparse
 import logging
@@ -52,8 +44,6 @@ log = logging.getLogger(__name__)
 
 # ── ensure ashare_bt is importable ────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
-
-from loader import AKLoader
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -183,12 +173,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="Download all A-share daily data to individual CSVs."
     )
-    parser.add_argument("--root",    required=True,  help="Output folder for CSV files")
-    parser.add_argument("--adjust",  default="qfq",  help="qfq / hfq / '' (default: qfq)")
-    parser.add_argument("--start",   default="2015-01-01", help="Initial download start date")
-    parser.add_argument("--workers", default=3, type=int,  help="Parallel threads (default: 3)")
-    parser.add_argument("--throttle",default=0.5, type=float, help="Seconds between requests")
-    parser.add_argument("--symbols", default=None,
+    parser.add_argument("--root",     required=True,       help="Output folder for CSV files")
+    parser.add_argument("--adjust",   default="qfq",       help="qfq / hfq / '' (default: qfq)")
+    parser.add_argument("--start",    default="2015-01-01", help="Initial download start date")
+    parser.add_argument("--workers",  default=1, type=int,  help="Parallel threads (default: 1). Keep at 1 to avoid V8/py_mini_racer crashes.")
+    parser.add_argument("--throttle", default=0.5, type=float, help="Seconds between requests")
+    parser.add_argument("--symbols",  default=None,
                         help="Comma-separated tickers, e.g. 600519,000001. Default: all.")
     args = parser.parse_args()
 
@@ -208,40 +198,17 @@ def main():
         tickers = [s.strip().zfill(6) for s in args.symbols.split(",")]
         log.info("Downloading %d specified tickers", len(tickers))
     else:
-        log.info("Fetching full A-share universe…")
-        tickers = None
-
-        # Try 1: East Money
+        log.info("Loading universe from local name registry…")
         try:
-            spot = ak.stock_zh_a_spot_em()
-            tickers = spot["代码"].astype(str).str.zfill(6).tolist()
-            log.info("Stock list from East Money: %d tickers", len(tickers))
+            from data.local_api import LocalDataAPI
+            api     = LocalDataAPI(root, name_file=None)
+            tickers = api.universe()
+            log.info("Universe: %d tickers from local registry", len(tickers))
         except Exception as e:
-            log.warning("East Money stock list failed (%s), trying Sina…", e)
-
-        # Try 2: Sina
-        if tickers is None:
-            try:
-                spot = ak.stock_info_a_code_name()
-                tickers = spot["code"].astype(str).str.zfill(6).tolist()
-                log.info("Stock list from Sina: %d tickers", len(tickers))
-            except Exception as e:
-                log.warning("Sina stock list failed (%s), trying SSE/SZSE…", e)
-
-        # Try 3: Build list from SSE + SZSE exchange listings
-        if tickers is None:
-            try:
-                sh = ak.stock_info_sh_delist(symbol="上市公司")
-                sz = ak.stock_info_sz_name_code(indicator="A股列表")
-                sh_codes = sh["SECURITY_CODE"].astype(str).str.zfill(6).tolist()
-                sz_codes = sz["A股代码"].astype(str).str.zfill(6).tolist()
-                tickers = list(set(sh_codes + sz_codes))
-                log.info("Stock list from SSE+SZSE: %d tickers", len(tickers))
-            except Exception as e:
-                log.error("All stock list sources failed. Use --symbols to specify tickers manually.")
-                sys.exit(1)
-
-        log.info("Universe: %d tickers", len(tickers))
+            log.error("Could not load local universe: %s", e)
+            log.error("Tip: run LocalDataAPI once with an internet connection to"
+                      " populate _names.csv, or use --symbols to specify tickers.")
+            sys.exit(1)
 
     # Download
     total   = len(tickers)
@@ -249,6 +216,20 @@ def main():
     errors  = []
     updated = []
     skipped = []
+
+    # Warm up py_mini_racer / V8 before spawning threads.
+    # AKShare uses a JavaScript engine (py_mini_racer) that crashes if
+    # multiple threads try to initialise it simultaneously.  One dummy
+    # call here forces the singleton to initialise in the main thread.
+    if args.workers > 1:
+        log.info("Pre-warming AKShare JS engine (required for multi-threading)…")
+        try:
+            ak.stock_zh_a_hist(
+                symbol=tickers[0], period="daily",
+                start_date="20240101", end_date="20240102", adjust="qfq",
+            )
+        except Exception:
+            pass  # result doesn't matter — we just need V8 initialised
 
     log.info("Starting download with %d worker(s)…", args.workers)
 

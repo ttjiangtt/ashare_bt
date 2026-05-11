@@ -2,7 +2,7 @@
 examples/markout_sweep.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 Multi-stock markout sweep across the full local universe.
-Supports multiple signal types via --signal.
+Supports multiple signal types via --signal / --signals.
 
 Outputs (in williams/<signal>/ folder):
   sweep_full.csv       — one row per ticker, full period
@@ -11,10 +11,12 @@ Outputs (in williams/<signal>/ folder):
   signals_cache/       — raw per-signal parquet files
 
 Usage:
-    python examples/markout_sweep.py                          # Williams (default)
+    python examples/markout_sweep.py                                    # Williams (default)
     python examples/markout_sweep.py --signal nine_turns
     python examples/markout_sweep.py --signal nine_turns --perfect
     python examples/markout_sweep.py --signal williams --tickers 600519,000001
+    python examples/markout_sweep.py --signals williams,nine_turns      # intersection (both must fire)
+    python examples/markout_sweep.py --signals williams,nine_turns --window 3
     python examples/markout_sweep.py --signal nine_turns --workers 4
 """
 
@@ -55,10 +57,92 @@ def _build_signal(signal_name: str, df, signal_kwargs: dict):
         raise ValueError(f"Unknown signal: {signal_name!r}. Choose 'williams' or 'nine_turns'.")
 
 
+class _CombinedSignalsShim:
+    """
+    Minimal shim so Markout can consume a list of combined signals.
+    Markout requires .signals (list) and .swings.df (price DataFrame).
+    """
+    class _SwingsShim:
+        def __init__(self, df):
+            self.df = df
+
+    def __init__(self, signals, df):
+        self.signals = signals
+        self.swings  = self._SwingsShim(df)
+
+
+def _find_intersecting_signals(sg_objects, df, window: int):
+    """
+    Return a list of Signal-like objects where every signal source in
+    sg_objects has fired in the same direction within `window` bars.
+
+    Entry is taken at the bar of the *last* confirming signal in each
+    cluster, so no look-ahead is introduced.
+    """
+    from signals.williams_signals import Signal as WSignal
+
+    closes = df["close"].values
+    dates  = df.index
+    n      = len(df)
+
+    # Build {direction: sorted list of bars} for each signal source
+    bar_sets = []
+    for sg in sg_objects:
+        d = {+1: set(), -1: set()}
+        for s in sg.signals:
+            d[s.direction].add(s.bar)
+        bar_sets.append(d)
+
+    combined = []
+    seen_bars = set()
+
+    for direction in (+1, -1):
+        # All bars where at least one source fires in this direction
+        all_bars = sorted(set().union(*[bs[direction] for bs in bar_sets]))
+
+        for bar in all_bars:
+            if bar in seen_bars:
+                continue
+
+            # Within [bar-window, bar], does every source have a firing?
+            match_bars = []
+            all_present = True
+            for bs in bar_sets:
+                candidates = [b for b in bs[direction] if bar - window <= b <= bar]
+                if not candidates:
+                    all_present = False
+                    break
+                match_bars.append(max(candidates))
+
+            if not all_present:
+                continue
+
+            # Only emit when this bar is the latest confirming bar —
+            # prevents duplicate entries for the same cluster.
+            if max(match_bars) != bar:
+                continue
+
+            if bar >= n:
+                continue
+
+            seen_bars.add(bar)
+            combined.append(WSignal(
+                bar=bar,
+                date=dates[bar],
+                direction=direction,
+                entry_close=float(closes[bar]),
+                trigger=f"Combined({'+'.join(str(i) for i in range(len(sg_objects)))}) {direction:+d}",
+                it_trend=0,
+            ))
+
+    combined.sort(key=lambda s: s.bar)
+    return combined
+
+
 # ── Worker ────────────────────────────────────────────────────────────────────
 
 def _process_ticker(args):
-    ticker, root, horizon, start, cache_dir, signal_name, signal_kwargs = args
+    ticker, root, horizon, start, cache_dir, signal_names, signal_kwargs, window = args
     try:
         from data.local_api import LocalDataAPI
         from signals.williams_signals import Markout
@@ -69,9 +153,16 @@ def _process_ticker(args):
         if len(df) < 100:
             return ticker, api.name(ticker), None, [], []
 
-        sg = _build_signal(signal_name, df, signal_kwargs)
-        if not sg.signals:
-            return ticker, api.name(ticker), None, [], []
+        if len(signal_names) == 1:
+            sg = _build_signal(signal_names[0], df, signal_kwargs)
+            if not sg.signals:
+                return ticker, api.name(ticker), None, [], []
+        else:
+            sg_objects = [_build_signal(name, df, signal_kwargs) for name in signal_names]
+            combined   = _find_intersecting_signals(sg_objects, df, window)
+            if not combined:
+                return ticker, api.name(ticker), None, [], []
+            sg = _CombinedSignalsShim(combined, df)
 
         mk      = Markout(sg, horizons=[horizon], raw=False).fit()
         raw_df  = mk.raw_df.copy()
@@ -133,10 +224,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root",    default="C:/Users/ttjia/OneDrive/Work/ashare/market_data")
     parser.add_argument("--out",     default=None,
-                        help="Output base folder. Default: /<signal>/")
+                        help="Output base folder. Default: /<signal_tag>/")
     parser.add_argument("--signal",  default="williams",
                         choices=["williams", "nine_turns"],
-                        help="Signal to use (default: williams)")
+                        help="Single signal to use (default: williams). Ignored when --signals is set.")
+    parser.add_argument("--signals", default=None,
+                        help="Comma-separated list of signals that must ALL fire within --window bars "
+                             "for an entry to be taken. E.g. --signals williams,nine_turns")
+    parser.add_argument("--window",  default=5, type=int,
+                        help="Bar window for multi-signal intersection (default: 5). "
+                             "All signals must fire within this many bars of each other.")
     parser.add_argument("--perfect", action="store_true",
                         help="nine_turns only: apply perfection filter")
     parser.add_argument("--horizon", default=5,    type=int)
@@ -147,14 +244,28 @@ def main():
                         help="Cache subfolder name. Set to '' to disable.")
     args = parser.parse_args()
 
-    # ── Output folder: williams/<signal_name>/ ────────────────────────────────
-    signal_name = args.signal
-    signal_tag  = signal_name if signal_name == "williams" else (
-        "nine_turns_perfect" if args.perfect else "nine_turns"
-    )
+    # ── Resolve signal list ───────────────────────────────────────────────────
+    _valid = {"williams", "nine_turns"}
+    if args.signals:
+        signal_names = [s.strip() for s in args.signals.split(",")]
+        for s in signal_names:
+            if s not in _valid:
+                parser.error(f"Unknown signal {s!r}. Choose from: {sorted(_valid)}")
+    else:
+        signal_names = [args.signal]
+
     signal_kwargs = {}
-    if signal_name == "nine_turns":
+    if "nine_turns" in signal_names:
         signal_kwargs["perfect"] = args.perfect
+
+    # ── Output folder tag ─────────────────────────────────────────────────────
+    if len(signal_names) > 1:
+        signal_tag = "+".join(signal_names) + (f"_w{args.window}" if args.window != 5 else "")
+    else:
+        signal_name = signal_names[0]
+        signal_tag  = signal_name if signal_name == "williams" else (
+            "nine_turns_perfect" if args.perfect else "nine_turns"
+        )
 
     if args.out:
         outdir = Path(args.out)
@@ -177,14 +288,17 @@ def main():
         if args.tickers else api.list_tickers()
     )
 
-    log.info("Signal   : %s  %s", signal_name, "(perfect)" if args.perfect else "")
+    if len(signal_names) > 1:
+        log.info("Signals  : %s  (intersection window: %d bars)", " + ".join(signal_names), args.window)
+    else:
+        log.info("Signal   : %s  %s", signal_names[0], "(perfect)" if args.perfect else "")
     log.info("Universe : %d tickers", len(tickers))
     log.info("Horizon  : %dd  |  start: %s  |  workers: %d",
              args.horizon, args.start, args.workers)
     log.info("Output   : %s", outdir)
 
     tasks      = [(t, args.root, args.horizon, args.start,
-                   cache_dir, signal_name, signal_kwargs) for t in tickers]
+                   cache_dir, signal_names, signal_kwargs, args.window) for t in tickers]
     full_rows  = []
     year_rows  = []
     month_rows = []

@@ -23,6 +23,15 @@ Arguments:
                 e.g. --symbols 600519,000001,601318. Defaults to full universe.
     --throttle  Seconds to wait between requests (default: 0.5).
 """
+import argparse
+import sys
+import logging
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 
 import argparse
 import logging
